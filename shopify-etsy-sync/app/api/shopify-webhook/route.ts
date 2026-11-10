@@ -1,5 +1,13 @@
 import { NextResponse } from 'next/server';
 
+function toEtsyTitle(title: string) {
+  const cleaned = title
+    .replace(/<[^>]*>?/g, '')
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .trim();
+  return (cleaned || 'Product').slice(0, 140);
+}
+
 async function getEtsyAccessToken() {
   const apiKey = process.env.ETSY_API_KEY!;
   const refreshToken = process.env.ETSY_REFRESH_TOKEN!;
@@ -100,7 +108,7 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({
         quantity: inventoryQuantity,
-        title: title.substring(0, 100),
+        title: toEtsyTitle(title),
         description: bodyHtml.replace(/<[^>]*>?/gm, ''),
         price: parseFloat(price),
         who_made: 'i_did',
