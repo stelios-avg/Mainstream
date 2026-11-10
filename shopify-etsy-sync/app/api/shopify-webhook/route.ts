@@ -113,6 +113,36 @@ async function uploadListingImage(
   return data.listing_image_id as number;
 }
 
+async function findExistingListingId(shopId: string, apiKey: string, accessToken: string, title: string) {
+  const target = toEtsyTitle(title).toLowerCase();
+
+  for (const state of ['draft', 'active']) {
+    const url = new URL(`https://api.etsy.com/v3/application/shops/${shopId}/listings`);
+    url.searchParams.set('state', state);
+    url.searchParams.set('limit', '100');
+
+    const res = await fetch(url, {
+      headers: {
+        'x-api-key': apiKey,
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(`Etsy Listings Error: ${JSON.stringify(data)}`);
+    }
+
+    const match = (data.results || []).find(
+      (listing: { title?: string }) => (listing.title || '').trim().toLowerCase() === target,
+    );
+    if (match?.listing_id) {
+      return match.listing_id as number;
+    }
+  }
+
+  return null;
+}
+
 export async function POST(request: Request) {
   try {
     const payload = await request.json();
@@ -132,7 +162,7 @@ export async function POST(request: Request) {
     const inventoryQuantity = variant?.inventory_quantity || 1;
     const bodyHtml = payload.body_html || title;
 
-    console.log(`Δημιουργία στο Etsy για το προϊόν: "${title}" - Τιμή: ${price} - Απόθεμα: ${inventoryQuantity}`);
+    console.log(`Συγχρονισμός στο Etsy για το προϊόν: "${title}" - Τιμή: ${price} - Απόθεμα: ${inventoryQuantity}`);
 
     const accessToken = await getEtsyAccessToken();
     const apiKey = (process.env.ETSY_API_KEY || '').trim();
@@ -150,34 +180,46 @@ export async function POST(request: Request) {
     const readinessStateId = await getReadinessStateId(shopId, xApiKey, accessToken);
     console.log(`Etsy profiles: shipping=${shippingProfileId}, readiness=${readinessStateId}`);
 
-    const etsyRes = await fetch(`https://api.etsy.com/v3/application/shops/${shopId}/listings`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': xApiKey,
-        'Authorization': `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({
-        quantity: inventoryQuantity,
-        title: toEtsyTitle(title),
-        description: bodyHtml.replace(/<[^>]*>?/gm, ''),
-        price: parseFloat(price),
-        who_made: 'i_did',
-        when_made: '2020_2026',
-        taxonomy_id: 1,
-        shipping_profile_id: shippingProfileId,
-        readiness_state_id: readinessStateId,
-      }),
-    });
+    const listingTitle = toEtsyTitle(title);
+    let listingId = await findExistingListingId(shopId, xApiKey, accessToken, listingTitle);
 
-    const etsyData = await etsyRes.json();
-    
-    if (!etsyRes.ok) {
-      console.error('Etsy API Error:', JSON.stringify(etsyData));
-      throw new Error(`Etsy API Error: ${JSON.stringify(etsyData)}`);
+    if (listingId) {
+      console.log(`Υπάρχει ήδη listing ${listingId} για "${listingTitle}". Δεν δημιουργείται δεύτερο.`);
+    } else {
+      const etsyRes = await fetch(`https://api.etsy.com/v3/application/shops/${shopId}/listings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': xApiKey,
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          quantity: inventoryQuantity,
+          title: listingTitle,
+          description: bodyHtml.replace(/<[^>]*>?/gm, ''),
+          price: parseFloat(price),
+          who_made: 'i_did',
+          when_made: '2020_2026',
+          taxonomy_id: 1,
+          shipping_profile_id: shippingProfileId,
+          readiness_state_id: readinessStateId,
+        }),
+      });
+
+      const etsyData = await etsyRes.json();
+
+      if (!etsyRes.ok) {
+        console.error('Etsy API Error:', JSON.stringify(etsyData));
+        throw new Error(`Etsy API Error: ${JSON.stringify(etsyData)}`);
+      }
+
+      listingId = etsyData.listing_id;
+      console.log(`Επιτυχής δημιουργία listing στο Etsy! Listing ID: ${listingId}`);
     }
 
-    console.log(`Επιτυχής δημιουργία listing στο Etsy! Listing ID: ${etsyData.listing_id}`);
+    if (!listingId) {
+      throw new Error('Missing Etsy listing id');
+    }
 
     const imageUrls = shopifyImageUrls(payload);
     const imageIds: number[] = [];
@@ -188,14 +230,14 @@ export async function POST(request: Request) {
       try {
         const imageId = await uploadListingImage(
           shopId,
-          etsyData.listing_id,
+          listingId,
           xApiKey,
           accessToken,
           imageUrls[index],
           rank,
         );
         imageIds.push(imageId);
-        console.log(`Ανέβηκε φωτογραφία ${rank}/${imageUrls.length} στο listing ${etsyData.listing_id}`);
+        console.log(`Ανέβηκε φωτογραφία ${rank}/${imageUrls.length} στο listing ${listingId}`);
       } catch (imageError) {
         const message = imageError instanceof Error ? imageError.message : String(imageError);
         imageErrors.push(message);
@@ -209,7 +251,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
-      listing_id: etsyData.listing_id,
+      listing_id: listingId,
       images_uploaded: imageIds.length,
       image_errors: imageErrors,
     });
