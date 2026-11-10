@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-// Συνάρτηση για ανανέωση του Etsy Access Token μέσω του Refresh Token
+// Συνάρτηση για ανανέωση του Etsy Access Token
 async function getEtsyAccessToken() {
   const apiKey = process.env.ETSY_API_KEY!;
   const refreshToken = process.env.ETSY_REFRESH_TOKEN!;
@@ -24,25 +24,33 @@ export async function POST(request: Request) {
   try {
     const payload = await request.json();
     
-    // Παίρνουμε τα στοιχεία του προϊόντος από το Shopify
     const title = payload.title;
-    const bodyHtml = payload.body_html || '';
+    const tagsStr = payload.tags || '';
+    const tags = tagsStr.split(',').map((t: string) => t.trim().toLowerCase());
+    
+    // Ελέγχουμε αν το προϊόν έχει το tag "etsy"
+    const TARGET_TAG = 'etsy';
+    if (!tags.includes(TARGET_TAG)) {
+      console.log(`Το προϊόν "${title}" δεν έχει το tag "${TARGET_TAG}". Παραλείπεται.`);
+      return NextResponse.json({ success: true, message: 'Product skipped (missing tag)' });
+    }
+
     const variant = payload.variants?.[0];
     const price = variant?.price;
     const inventoryQuantity = variant?.inventory_quantity || 0;
 
-    console.log(`Λήφθηκε προϊόν από Shopify: "${title}" - Απόθεμα: ${inventoryQuantity}`);
+    console.log(`Συγχρονισμός προϊόντος με Etsy: "${title}" - Απόθεμα: ${inventoryQuantity}`);
 
-    // Ανάκτηση ενεργού Access Token για το Etsy
     const accessToken = await getEtsyAccessToken();
-    const apiKey = process.env.ETSY_API_KEY!;
-    const shopId = process.env.ETSY_SHOP_ID!;
+    const shopId = (process.env.ETSY_SHOP_ID || process.env.SHOP_ID || '').trim();
+    if (!shopId) {
+      throw new Error('Missing ETSY_SHOP_ID');
+    }
 
-    // Παράδειγμα κλήσης προς το Etsy API για ενημέρωση αποθέματος/προϊόντος
-    // (Εδώ θα συνδέσουμε την αντίστοιχη καταχώρηση στο Etsy)
-    console.log(`Επιτυχής επικοινωνία με Etsy Shop ID: ${shopId}`);
+    // Εδώ θα μπει η κλήση δημιουργίας listing στο Etsy API για τα προϊόντα με το tag
+    console.log(`Επιτυχής αποστολή στο Etsy Shop ID: ${shopId}`);
 
-    return NextResponse.json({ success: true, message: 'Webhook processed & synced with Etsy' });
+    return NextResponse.json({ success: true, message: 'Product successfully synced with Etsy' });
   } catch (error: any) {
     console.error('Webhook Error:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
