@@ -62,6 +62,57 @@ async function getReadinessStateId(shopId: string, apiKey: string, accessToken: 
   throw new Error('Δεν βρέθηκε processing profile στο Etsy. Δημιούργησε τουλάχιστον ένα προφίλ επεξεργασίας στο Etsy shop σου.');
 }
 
+function shopifyImageUrls(payload: { images?: { src?: string; position?: number }[]; image?: { src?: string } }) {
+  const images = Array.isArray(payload.images) ? payload.images : [];
+  const urls = [...images]
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+    .map((image) => image.src)
+    .filter((src): src is string => Boolean(src));
+
+  if (urls.length === 0 && payload.image?.src) {
+    urls.push(payload.image.src);
+  }
+
+  return [...new Set(urls)].slice(0, 10);
+}
+
+async function uploadListingImage(
+  shopId: string,
+  listingId: number,
+  apiKey: string,
+  accessToken: string,
+  imageUrl: string,
+  rank: number,
+) {
+  const imageRes = await fetch(imageUrl);
+  if (!imageRes.ok) {
+    throw new Error(`Αποτυχία λήψης φωτογραφίας Shopify (${imageRes.status}): ${imageUrl}`);
+  }
+
+  const contentType = imageRes.headers.get('content-type')?.split(';')[0] || 'image/jpeg';
+  const extension = contentType.includes('png') ? 'png' : contentType.includes('gif') ? 'gif' : 'jpg';
+  const bytes = await imageRes.arrayBuffer();
+  const form = new FormData();
+  form.append('image', new Blob([bytes], { type: contentType }), `photo-${rank}.${extension}`);
+  form.append('rank', String(rank));
+  form.append('overwrite', 'true');
+
+  const res = await fetch(`https://api.etsy.com/v3/application/shops/${shopId}/listings/${listingId}/images`, {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: form,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`Etsy Image Error: ${JSON.stringify(data)}`);
+  }
+
+  return data.listing_image_id as number;
+}
+
 export async function POST(request: Request) {
   try {
     const payload = await request.json();
@@ -128,7 +179,40 @@ export async function POST(request: Request) {
 
     console.log(`Επιτυχής δημιουργία listing στο Etsy! Listing ID: ${etsyData.listing_id}`);
 
-    return NextResponse.json({ success: true, listing_id: etsyData.listing_id });
+    const imageUrls = shopifyImageUrls(payload);
+    const imageIds: number[] = [];
+    const imageErrors: string[] = [];
+
+    for (let index = 0; index < imageUrls.length; index += 1) {
+      const rank = index + 1;
+      try {
+        const imageId = await uploadListingImage(
+          shopId,
+          etsyData.listing_id,
+          xApiKey,
+          accessToken,
+          imageUrls[index],
+          rank,
+        );
+        imageIds.push(imageId);
+        console.log(`Ανέβηκε φωτογραφία ${rank}/${imageUrls.length} στο listing ${etsyData.listing_id}`);
+      } catch (imageError) {
+        const message = imageError instanceof Error ? imageError.message : String(imageError);
+        imageErrors.push(message);
+        console.error(message);
+      }
+    }
+
+    if (imageUrls.length === 0) {
+      console.log(`Το προϊόν "${title}" δεν έχει φωτογραφίες στο Shopify.`);
+    }
+
+    return NextResponse.json({
+      success: true,
+      listing_id: etsyData.listing_id,
+      images_uploaded: imageIds.length,
+      image_errors: imageErrors,
+    });
   } catch (error: any) {
     console.error('Webhook Error:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
