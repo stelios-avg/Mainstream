@@ -19,6 +19,23 @@ async function getEtsyAccessToken() {
   return data.access_token;
 }
 
+async function getShippingProfileId(shopId: string, apiKey: string, accessToken: string) {
+  const res = await fetch(`https://api.etsy.com/v3/application/shops/${shopId}/shipping-profiles`, {
+    headers: {
+      'x-api-key': apiKey,
+      'Authorization': `Bearer ${accessToken}`,
+    },
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(`Etsy Shipping Profile Error: ${JSON.stringify(data)}`);
+  }
+  if (data.results && data.results.length > 0) {
+    return data.results[0].shipping_profile_id;
+  }
+  throw new Error('Δεν βρέθηκε shipping profile στο Etsy. Δημιούργησε τουλάχιστον ένα προφίλ αποστολής στο Etsy shop σου.');
+}
+
 export async function POST(request: Request) {
   try {
     const payload = await request.json();
@@ -40,17 +57,20 @@ export async function POST(request: Request) {
 
     console.log(`Δημιουργία στο Etsy για το προϊόν: "${title}" - Τιμή: ${price} - Απόθεμα: ${inventoryQuantity}`);
 
-    // Λήψη Token και Shop ID
     const accessToken = await getEtsyAccessToken();
-    const apiKey = process.env.ETSY_API_KEY!;
+    const apiKey = (process.env.ETSY_API_KEY || '').trim();
     const shopId = (process.env.ETSY_SHOP_ID || process.env.SHOP_ID || '').trim();
+
     if (!shopId) {
-      throw new Error('Missing ETSY_SHOP_ID');
+      throw new Error('Missing ETSY_SHOP_ID environment variable!');
     }
+
     const sharedSecret = (process.env.ETSY_SHARED_SECRET || '').trim();
     const xApiKey = sharedSecret ? `${apiKey}:${sharedSecret}` : apiKey;
 
-    // Αποστολή αιτήματος στο Etsy API v3 για δημιουργία Draft Listing
+    // Αυτόματη εύρεση ενεργού Shipping Profile ID
+    const shippingProfileId = await getShippingProfileId(shopId, xApiKey, accessToken);
+
     const etsyRes = await fetch(`https://api.etsy.com/v3/application/shops/${shopId}/listings`, {
       method: 'POST',
       headers: {
@@ -60,13 +80,13 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({
         quantity: inventoryQuantity,
-        title: title.substring(0, 100), // Το Etsy επιτρέπει έως 100 χαρακτήρες στον τίτλο
-        description: bodyHtml.replace(/<[^>]*>?/gm, ''), // Καθαρισμός HTML tags για το Etsy
+        title: title.substring(0, 100),
+        description: bodyHtml.replace(/<[^>]*>?/gm, ''),
         price: parseFloat(price),
         who_made: 'i_did',
         when_made: '2020_2026',
-        taxonomy_id: 1, // Βασική κατηγορία (μπορείς να την ορίσεις ανάλογα)
-        shipping_profile_id: null, // Θα πάρει το default shipping profile του καταστήματος αν το αφήσεις
+        taxonomy_id: 1,
+        shipping_profile_id: shippingProfileId,
       }),
     });
 
