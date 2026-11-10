@@ -36,6 +36,24 @@ async function getShippingProfileId(shopId: string, apiKey: string, accessToken:
   throw new Error('Δεν βρέθηκε shipping profile στο Etsy. Δημιούργησε τουλάχιστον ένα προφίλ αποστολής στο Etsy shop σου.');
 }
 
+async function getReadinessStateId(shopId: string, apiKey: string, accessToken: string) {
+  const res = await fetch(`https://api.etsy.com/v3/application/shops/${shopId}/readiness-state-definitions`, {
+    headers: {
+      'x-api-key': apiKey,
+      'Authorization': `Bearer ${accessToken}`,
+    },
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(`Etsy Readiness State Error: ${JSON.stringify(data)}`);
+  }
+  const readinessStateId = data.results?.find((profile: { readiness_state_id?: number }) => profile.readiness_state_id)?.readiness_state_id;
+  if (readinessStateId) {
+    return readinessStateId;
+  }
+  throw new Error('Δεν βρέθηκε processing profile στο Etsy. Δημιούργησε τουλάχιστον ένα προφίλ επεξεργασίας στο Etsy shop σου.');
+}
+
 export async function POST(request: Request) {
   try {
     const payload = await request.json();
@@ -68,8 +86,10 @@ export async function POST(request: Request) {
     const sharedSecret = (process.env.ETSY_SHARED_SECRET || '').trim();
     const xApiKey = sharedSecret ? `${apiKey}:${sharedSecret}` : apiKey;
 
-    // Αυτόματη εύρεση ενεργού Shipping Profile ID
+    // Αυτόματη εύρεση ενεργού Shipping Profile και Processing Profile
     const shippingProfileId = await getShippingProfileId(shopId, xApiKey, accessToken);
+    const readinessStateId = await getReadinessStateId(shopId, xApiKey, accessToken);
+    console.log(`Etsy profiles: shipping=${shippingProfileId}, readiness=${readinessStateId}`);
 
     const etsyRes = await fetch(`https://api.etsy.com/v3/application/shops/${shopId}/listings`, {
       method: 'POST',
@@ -87,6 +107,7 @@ export async function POST(request: Request) {
         when_made: '2020_2026',
         taxonomy_id: 1,
         shipping_profile_id: shippingProfileId,
+        readiness_state_id: readinessStateId,
       }),
     });
 
